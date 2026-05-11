@@ -277,17 +277,22 @@ def signup(data: SignupRequest, db: Session = Depends(get_db)):
 
 @app.post("/auth/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
+    try:
+        user = db.query(User).filter(User.email == data.email).first()
 
-    if not user or not verify_password(data.password, user.password):
-        raise HTTPException(status_code=400, detail="Invalid email or password")
+        if not user or not verify_password(data.password, user.password):
+            raise HTTPException(status_code=400, detail="Invalid email or password")
 
-    token = create_access_token({"sub": str(user.id)})
+        token = create_access_token({"sub": str(user.id)})
 
-    return {
-        "access_token": token,
-        "token_type": "bearer"
-    }
+        return {
+            "access_token": token,
+            "token_type": "bearer"
+        }
+
+    except Exception as e:
+        print("LOGIN ERROR:", repr(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
