@@ -2087,16 +2087,22 @@ async def instagram_webhook(request: Request, db: Session = Depends(get_db)):
             await _handle_dm(sender_id, recipient_id, text, ig_msg_id, db)
 
         # ── Comments ─────────────────────────────────────────────────────
+        # Instagram Graph API sends comments with field="comments" and value.text
         for change in entry.get("changes", []):
-            if change.get("field") != "feed":
-                continue
+            field = change.get("field", "")
             val = change.get("value", {})
-            if val.get("item") != "comment":
+            print(f"[IG Webhook] Change field={field!r} val_keys={list(val.keys())}")
+
+            if field != "comments":
                 continue
 
-            comment_id = val.get("comment_id")
+            # Instagram sends comment id as "id" (not "comment_id")
+            comment_id = val.get("id") or val.get("comment_id")
             sender_id = val.get("from", {}).get("id")
-            text = val.get("message", "").strip()
+            # Instagram uses "text" not "message"
+            text = (val.get("text") or val.get("message") or "").strip()
+
+            print(f"[IG Comment] comment_id={comment_id} sender={sender_id} text={text!r}")
 
             if not text or not comment_id:
                 continue
@@ -2190,12 +2196,19 @@ async def _handle_dm(sender_ig_id: str, recipient_ig_id: str, text: str, ig_msg_
 # ── Internal helper: handle an incoming IG Comment ──────────────────────────
 async def _handle_comment(sender_ig_id: str, page_id: str, comment_id: str, text: str, db: Session):
     """Find matching channel with reply_to_comments=True, reply in comment AND send DM."""
+    print(f"[IG Comment] _handle_comment: sender={sender_ig_id} page_id={page_id} comment_id={comment_id} text={text!r}")
+
     social_acc = db.query(SocialAccount).filter(
         SocialAccount.account_id == page_id,
         SocialAccount.platform == "instagram"
     ).first()
     if not social_acc:
+        print(f"[IG Comment] ❌ No SocialAccount for page_id={page_id}")
+        all_accs = db.query(SocialAccount).filter(SocialAccount.platform == "instagram").all()
+        print(f"[IG Comment]    Known IG accounts: {[(a.account_id, a.username) for a in all_accs]}")
         return
+
+    print(f"[IG Comment] ✅ SocialAccount: id={social_acc.id} username={social_acc.username}")
 
     channels = db.query(ChatbotChannel).filter(
         ChatbotChannel.social_account_id == social_acc.id,
@@ -2203,31 +2216,37 @@ async def _handle_comment(sender_ig_id: str, page_id: str, comment_id: str, text
         ChatbotChannel.reply_to_comments == True
     ).all()
     if not channels:
+        all_ch = db.query(ChatbotChannel).filter(ChatbotChannel.social_account_id == social_acc.id).all()
+        print(f"[IG Comment] ❌ No comment-enabled channels. All channels: {[(c.id, c.is_enabled, c.reply_to_comments) for c in all_ch]}")
         return
 
     channel = channels[0]
     chatbot = db.query(Chatbot).filter(Chatbot.id == channel.chatbot_id).first()
     if not chatbot:
+        print(f"[IG Comment] ❌ Chatbot {channel.chatbot_id} not found")
         return
+
+    print(f"[IG Comment] Using chatbot: id={chatbot.id} name={chatbot.name!r}")
 
     reply_text = await _match_automation_rule(
         channel.id, "comment", text, chatbot, social_acc, db
     )
+    print(f"[IG Comment] reply_text={reply_text!r}")
 
     # 1) Reply publicly in the comment thread
     try:
         await reply_to_comment(comment_id, reply_text, social_acc.access_token)
-        print(f"[IG Comment] Replied to comment {comment_id}: {reply_text[:80]}")
+        print(f"[IG Comment] ✅ Replied to comment {comment_id}: {reply_text[:80]}")
     except Exception as e:
-        print(f"[IG Comment] Reply failed: {e}")
+        print(f"[IG Comment] ❌ Reply failed: {e}")
 
     # 2) Also send a DM to the commenter (if we have their IG id and it's not our own page)
     if sender_ig_id and sender_ig_id != page_id:
         try:
             await send_dm(sender_ig_id, reply_text, social_acc.access_token)
-            print(f"[IG Comment] Sent DM to commenter {sender_ig_id}")
+            print(f"[IG Comment] ✅ Sent DM to commenter {sender_ig_id}")
         except Exception as e:
-            print(f"[IG Comment] DM to commenter failed: {e}")
+            print(f"[IG Comment] ❌ DM to commenter failed: {e}")
 
 
 # ── AI / automation rule matcher ─────────────────────────────────────────────
