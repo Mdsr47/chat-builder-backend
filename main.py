@@ -2274,3 +2274,10 @@ async def _match_automation_rule(
         print(f"[IG AI] Error generating answer: {e}")
         return "Hi! Thanks for reaching out. We'll get back to you shortly."
 
+
+from models import Base
+from database import engine
+
+@app.on_event("startup")
+def startup():
+    Base.metadata.create_all(bind=engine)
