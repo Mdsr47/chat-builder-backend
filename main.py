@@ -2049,7 +2049,7 @@ def verify_webhook(
         return Response(content=hub_challenge, media_type="text/plain")
     raise HTTPException(403, "Verification failed")
 
-
+import json
 # ── Webhook Events (POST) ────────────────────────────────────────────────────
 @app.post("/instagram/webhook")
 async def instagram_webhook(request: Request, db: Session = Depends(get_db)):
