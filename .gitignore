@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.python-version
+.env
+*.env
+
+# Virtual environments
+venv/
+.env/
+ENV/
+env/
+*.venv/
+rag_env/
+
+# SQLite
+*.db
+*.sqlite3
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Python package artifacts
+pip-wheel-metadata/
+htmlcov/
+coverage.xml
+*.cover
+*.py,cover
+.cache
+.pytest_cache/
+
+# Local app state
+vector_store/
+*.log
+
+# JetBrains
+.idea/
+
+# OS generated files
+Thumbs.db
