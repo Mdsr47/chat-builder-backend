@@ -2189,7 +2189,7 @@ async def _handle_dm(sender_ig_id: str, recipient_ig_id: str, text: str, ig_msg_
 
 # ── Internal helper: handle an incoming IG Comment ──────────────────────────
 async def _handle_comment(sender_ig_id: str, page_id: str, comment_id: str, text: str, db: Session):
-    """Find matching channel with reply_to_comments=True and send DM reply."""
+    """Find matching channel with reply_to_comments=True, reply in comment AND send DM."""
     social_acc = db.query(SocialAccount).filter(
         SocialAccount.account_id == page_id,
         SocialAccount.platform == "instagram"
@@ -2214,11 +2214,20 @@ async def _handle_comment(sender_ig_id: str, page_id: str, comment_id: str, text
         channel.id, "comment", text, chatbot, social_acc, db
     )
 
+    # 1) Reply publicly in the comment thread
     try:
         await reply_to_comment(comment_id, reply_text, social_acc.access_token)
-        print(f"[IG Comment] Replied to comment {comment_id}")
+        print(f"[IG Comment] Replied to comment {comment_id}: {reply_text[:80]}")
     except Exception as e:
         print(f"[IG Comment] Reply failed: {e}")
+
+    # 2) Also send a DM to the commenter (if we have their IG id and it's not our own page)
+    if sender_ig_id and sender_ig_id != page_id:
+        try:
+            await send_dm(sender_ig_id, reply_text, social_acc.access_token)
+            print(f"[IG Comment] Sent DM to commenter {sender_ig_id}")
+        except Exception as e:
+            print(f"[IG Comment] DM to commenter failed: {e}")
 
 
 # ── AI / automation rule matcher ─────────────────────────────────────────────
@@ -2244,23 +2253,36 @@ async def _match_automation_rule(
         break
 
     # ── AI answer via RAG ────────────────────────────────────────────────────
-    session_id = f"ig_{social_acc.account_id}_{chatbot.id}"
     context_docs = search(text, chatbot_id=chatbot.id)
 
-    # Determine provider & API key
-    provider = "groq"
+    # Determine provider & API key — mirrors the website chatbot logic:
+    # Try the chatbot's preferred provider first; if no key saved, fall back to Groq.
+    provider = "groq"  # default
     api_key = None
+
     model_lower = (chatbot.model or "").lower()
     if "gpt" in model_lower or "openai" in model_lower:
         provider = "openai"
     elif "claude" in model_lower:
         provider = "claude"
+
+    # Look up user's key for the preferred provider
     user_key = db.query(ApiKey).filter(
         ApiKey.user_id == chatbot.user_id,
         ApiKey.provider == provider
     ).first()
+
     if user_key:
         api_key = user_key.api_key
+    elif provider != "groq":
+        # Preferred provider has no saved key → fall back to Groq
+        groq_key = db.query(ApiKey).filter(
+            ApiKey.user_id == chatbot.user_id,
+            ApiKey.provider == "groq"
+        ).first()
+        if groq_key:
+            api_key = groq_key.api_key
+        provider = "groq"  # use Groq (fallback key in llm.py handles None api_key too)
 
     try:
         answer = generate_answer(
@@ -2269,6 +2291,7 @@ async def _match_automation_rule(
             api_key=api_key,
             system_instructions=chatbot.system_instructions,
         )
+        print(f"[IG AI] Generated answer via {provider} (key={'yes' if api_key else 'fallback'})")
         return answer
     except Exception as e:
         print(f"[IG AI] Error generating answer: {e}")
