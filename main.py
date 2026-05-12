@@ -2107,6 +2107,10 @@ async def instagram_webhook(request: Request, db: Session = Depends(get_db)):
             if not text or not comment_id:
                 continue
 
+            if str(sender_id) == str(page_id):
+                print("[IG Comment] Skipping our own comment to avoid infinite loop")
+                continue
+
             await _handle_comment(sender_id, page_id, comment_id, text, db)
 
     event.processed = True
@@ -2147,6 +2151,8 @@ async def _handle_dm(sender_ig_id: str, recipient_ig_id: str, text: str, ig_msg_
     reply_text = await _match_automation_rule(
         channel.id, "dm", text, chatbot, social_acc, db
     )
+    if not reply_text:
+        return
 
     # Get/create conversation session
     convo = db.query(SocialConversation).filter(
@@ -2233,6 +2239,10 @@ async def _handle_comment(sender_ig_id: str, page_id: str, comment_id: str, text
     )
     print(f"[IG Comment] reply_text={reply_text!r}")
 
+    if not reply_text:
+        print("[IG Comment] No matching rule or keyword. Skipping reply.")
+        return
+
     # 1) Reply publicly in the comment thread
     try:
         await reply_to_comment(comment_id, reply_text, social_acc.access_token)
@@ -2253,23 +2263,36 @@ async def _handle_comment(sender_ig_id: str, page_id: str, comment_id: str, text
 async def _match_automation_rule(
     channel_id: int, trigger_type: str, text: str,
     chatbot, social_acc, db: Session
-) -> str:
+):
     """Check automation rules first; fall back to RAG AI answer."""
     rules = db.query(AutomationRule).filter(
         AutomationRule.chatbot_channel_id == channel_id,
         AutomationRule.trigger_type == trigger_type
     ).all()
 
+    matched_rule = None
+    has_keyword_rules = False
+
     for rule in rules:
         keyword = (rule.keyword or "").lower().strip()
-        if keyword and keyword not in text.lower():
-            continue  # keyword doesn't match
+        if keyword:
+            has_keyword_rules = True
+            if keyword in text.lower():
+                matched_rule = rule
+                break
 
-        if rule.response_type == "template" and rule.template:
-            return rule.template
+    if not matched_rule:
+        for rule in rules:
+            keyword = (rule.keyword or "").lower().strip()
+            if not keyword:
+                matched_rule = rule
+                break
 
-        # response_type == "ai" — fall through to AI below
-        break
+    if has_keyword_rules and not matched_rule:
+        return None
+
+    if matched_rule and matched_rule.response_type == "template" and matched_rule.template:
+        return matched_rule.template
 
     # ── AI answer via RAG ────────────────────────────────────────────────────
     context_docs = search(text, chatbot_id=chatbot.id)
