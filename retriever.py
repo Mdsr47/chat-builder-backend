@@ -3,6 +3,7 @@ import numpy as np
 import os
 import pickle
 from sentence_transformers import SentenceTransformer
+from database import supabase_client
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -24,11 +25,39 @@ def load_index():
 
 def _load_store(chatbot_id: int):
     """Load (or initialize) the index + docs for a specific chatbot."""
+    # 1. RAM (Memory) Check - Reply immediately if available
     if chatbot_id in _stores:
         return _stores[chatbot_id]
 
     index_file, doc_file = _get_paths(chatbot_id)
 
+    # 2. Disk Check & 3. Supabase Fallback
+    if not os.path.exists(index_file) or not os.path.exists(doc_file):
+        if supabase_client:
+            try:
+                print(f"Downloading index for chatbot {chatbot_id} from Supabase...")
+                os.makedirs(os.path.dirname(index_file), exist_ok=True)
+                
+                # Try downloading index
+                try:
+                    res_index = supabase_client.storage.from_("chatbot_indexes").download(f"{chatbot_id}/faiss.index")
+                    with open(index_file, "wb") as f:
+                        f.write(res_index)
+                except Exception as e:
+                    print(f"No index found in Supabase for {chatbot_id} or error: {e}")
+
+                # Try downloading docs
+                try:
+                    res_doc = supabase_client.storage.from_("chatbot_indexes").download(f"{chatbot_id}/docs.pkl")
+                    with open(doc_file, "wb") as f:
+                        f.write(res_doc)
+                except Exception as e:
+                    print(f"No docs found in Supabase for {chatbot_id} or error: {e}")
+                    
+            except Exception as e:
+                print(f"Error communicating with Supabase: {e}")
+
+    # Load from local files into RAM
     if os.path.exists(index_file):
         index = faiss.read_index(index_file)
     else:
@@ -55,6 +84,23 @@ def _save_store(chatbot_id: int):
 
     with open(doc_file, "wb") as f:
         pickle.dump(documents, f)
+        
+    # Sync to Supabase
+    if supabase_client:
+        try:
+            print(f"Syncing index for chatbot {chatbot_id} to Supabase...")
+            supabase_client.storage.from_("chatbot_indexes").upload(
+                file=index_file,
+                path=f"{chatbot_id}/faiss.index",
+                file_options={"content-type": "application/octet-stream", "upsert": "true"}
+            )
+            supabase_client.storage.from_("chatbot_indexes").upload(
+                file=doc_file,
+                path=f"{chatbot_id}/docs.pkl",
+                file_options={"content-type": "application/octet-stream", "upsert": "true"}
+            )
+        except Exception as e:
+            print(f"Error syncing to Supabase: {e}")
 
 
 def add_documents(chunks: list[str], source: str, chatbot_id: int):
@@ -114,6 +160,13 @@ def delete_store(chatbot_id: int):
         os.remove(doc_file)
     if chatbot_id in _stores:
         del _stores[chatbot_id]
+        
+    if supabase_client:
+        try:
+            print(f"Deleting index for chatbot {chatbot_id} from Supabase...")
+            supabase_client.storage.from_("chatbot_indexes").remove([f"{chatbot_id}/faiss.index", f"{chatbot_id}/docs.pkl"])
+        except Exception as e:
+            print(f"Error deleting from Supabase: {e}")
 
 
 # import faiss
